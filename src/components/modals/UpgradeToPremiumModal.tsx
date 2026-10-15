@@ -2,36 +2,109 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * UsahaQu v1.83 - Upgrade to Premium Modal
- * Modal interaktif saat pengguna mengeklik modul atau fitur terkunci (Locked Features).
- * Menampilkan ringkasan keunggulan paket Premium, integrasi pembayaran TriPay,
- * dan input serial key aktivasi lisensi.
+ * UsahaQu v1.83 - TriPay Checkout Modal & Upgrade to Premium
+ * Arsitektur Integrasi Pembayaran Otomatis TriPay:
+ * 1. Pilihan Paket (Starter 1 Modul, Combo 2-3 Modul, Ultimate All Modul)
+ * 2. Pembuatan Transaksi via Backend /api/create-payment
+ * 3. Tampilan Checkout Iframe / Webview / QRIS Langsung
+ * 4. Polling Otomatis Status Pembayaran via /api/payment-status/:reference
+ * 5. Update Lisensi LocalStorage & Header UI secara Real-Time
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, 
   Crown, 
   CheckCircle2, 
   Sparkles, 
   Lock, 
-  ShieldCheck, 
   ArrowRight, 
   QrCode, 
   CreditCard, 
   Key, 
-  Smartphone, 
   Check, 
   RefreshCw,
-  ExternalLink
+  ExternalLink,
+  ShieldCheck,
+  Building,
+  Smartphone,
+  Copy,
+  Clock,
+  AlertCircle
 } from 'lucide-react';
 import { 
   getLicense, 
   activateLicenseKey, 
-  simulateTrialExpiryForTesting, 
-  resetTrialForTesting,
-  LicenseMetadata
+  LicenseMetadata 
 } from '../../engine/licenseEngine';
+import { 
+  createPayment, 
+  startPaymentPolling, 
+  simulatePaymentSuccess,
+  TriPayPaymentResponse 
+} from '../../services/tripayClient';
+
+export interface UpgradePlan {
+  id: 'starter' | 'combo' | 'ultimate';
+  name: string;
+  tagline: string;
+  price: number;
+  period: string;
+  badge?: string;
+  features: string[];
+}
+
+export const UPGRADE_PLANS: UpgradePlan[] = [
+  {
+    id: 'starter',
+    name: 'Paket Starter 1 Modul',
+    tagline: 'Cocok untuk 1 Cabang Usaha Tunggal',
+    price: 99000,
+    period: '/ Tahun',
+    features: [
+      '1 Modul Utama Aktif Selamanya',
+      'Kasir POS Offline Bebas Kuota',
+      'Cetak Struk Bluetooth Thermal',
+      'Ekspor Rekap Laporan Bulanan'
+    ]
+  },
+  {
+    id: 'combo',
+    name: 'Paket Combo (2-3 Modul)',
+    tagline: 'Favorit UMKM Multi-Unit Bisnis',
+    price: 189000,
+    period: '/ Tahun',
+    badge: 'PALING POPULER',
+    features: [
+      'Bebas Pilih 3 Modul Usaha',
+      'Fitur WhatsApp Gateway Struk',
+      'Sinkronisasi Multi-HP Karyawan',
+      'Ekspor Buku Kas Excel Lengkap'
+    ]
+  },
+  {
+    id: 'ultimate',
+    name: 'Paket Ultimate All Modul',
+    tagline: 'Akses Seluruh Ekosistem Tanpa Batas',
+    price: 299000,
+    period: '/ Tahun',
+    badge: 'VIP FULL AKSES',
+    features: [
+      '5 Modul Ekosistem Penuh (Bengkel, Kedai, Klinik, Ritel, Titip)',
+      'Semua Fitur Premium Terbuka',
+      'Manajemen Multi-Cabang Outlet',
+      'Backup Cloud Otomatis Harian'
+    ]
+  }
+];
+
+export const PAYMENT_CHANNELS = [
+  { id: 'QRIS', name: 'QRIS Instant', icon: '📱', desc: 'GoPay, OVO, Dana, BCA, ShopeePay' },
+  { id: 'BCAVA', name: 'BCA Virtual Account', icon: '🏦', desc: 'Transfer Otomatis 24 Jam' },
+  { id: 'BRIVA', name: 'BRI Virtual Account', icon: '🏦', desc: 'ATM, BRImo, Internet Banking' },
+  { id: 'MANDIRIVA', name: 'Mandiri Virtual Account', icon: '🏦', desc: 'Livin by Mandiri & ATM' },
+  { id: 'BNIVA', name: 'BNI Virtual Account', icon: '🏦', desc: 'BNI Mobile & ATM' }
+];
 
 interface UpgradeToPremiumModalProps {
   isOpen: boolean;
@@ -48,90 +121,176 @@ export const UpgradeToPremiumModal: React.FC<UpgradeToPremiumModalProps> = ({
   lockedItemDescription = 'Fitur ini merupakan bagian dari paket UsahaQu Premium.',
   onUpgradeSuccess
 }) => {
-  const [selectedPlan, setSelectedPlan] = useState<'yearly' | 'monthly' | 'lifetime'>('yearly');
-  const [serialKey, setSerialKey] = useState('');
-  const [keyError, setKeyError] = useState<string | null>(null);
-  const [keySuccess, setKeySuccess] = useState<string | null>(null);
-  const [showTriPayCheckout, setShowTriPayCheckout] = useState(false);
-  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const [selectedPlanId, setSelectedPlanId] = useState<'starter' | 'combo' | 'ultimate'>('combo');
+  const [selectedChannel, setSelectedChannel] = useState<string>('QRIS');
+  const [customerEmail, setCustomerEmail] = useState<string>('');
+  
+  // Checkout & Payment State
+  const [isCreatingPayment, setIsCreatingPayment] = useState<boolean>(false);
+  const [activePayment, setActivePayment] = useState<TriPayPaymentResponse | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentSuccess, setPaymentSuccess] = useState<boolean>(false);
+  const [isSimulatingPay, setIsSimulatingPay] = useState<boolean>(false);
+  const [isCopied, setIsCopied] = useState<boolean>(false);
+
+  // Serial Key manual fallback
+  const [showKeyTab, setShowKeyTab] = useState<boolean>(false);
+  const [serialKeyInput, setSerialKeyInput] = useState<string>('');
+  const [keyResult, setKeyResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const stopPollingRef = useRef<(() => void) | null>(null);
+
+  // Inisialisasi email dari session atau profil lokal
+  useEffect(() => {
+    if (isOpen) {
+      try {
+        const rawProfile = localStorage.getItem('usahaqu_store_profile');
+        if (rawProfile) {
+          const profile = JSON.parse(rawProfile);
+          if (profile.email) setCustomerEmail(profile.email);
+        }
+      } catch {}
+      if (!customerEmail) {
+        setCustomerEmail('pemilik@usahaqu.id');
+      }
+    }
+    return () => {
+      if (stopPollingRef.current) {
+        stopPollingRef.current();
+        stopPollingRef.current = null;
+      }
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const currentLicense = getLicense();
+  const currentPlan = UPGRADE_PLANS.find((p) => p.id === selectedPlanId) || UPGRADE_PLANS[1];
 
-  const handleActivateKey = (e: React.FormEvent) => {
-    e.preventDefault();
-    setKeyError(null);
-    setKeySuccess(null);
+  // =========================================================================
+  // 1. BUAT TRANSAKSI TRIPAY (PILIH & BAYAR)
+  // =========================================================================
+  const handleInitiatePayment = async () => {
+    setIsCreatingPayment(true);
+    setPaymentError(null);
 
-    const result = activateLicenseKey(
-      serialKey, 
-      selectedPlan === 'lifetime' ? 'corporate' : selectedPlan === 'yearly' ? 'core' : 'basic', 
-      selectedPlan === 'lifetime' ? 120 : selectedPlan === 'yearly' ? 12 : 1
+    const license = getLicense();
+    const tenantId = license.device_id || `tenant-${Date.now()}`;
+
+    const res = await createPayment({
+      tenant_id: tenantId,
+      email: customerEmail || 'pemilik@usahaqu.id',
+      nama_paket: currentPlan.name,
+      amount: currentPlan.price,
+      payment_method: selectedChannel,
+      customer_name: license.owner_name || 'Pemilik UsahaQu',
+      return_url: window.location.href
+    });
+
+    setIsCreatingPayment(false);
+
+    if (!res.success || !res.data) {
+      setPaymentError(res.message || 'Gagal menghubungi server pembayaran TriPay.');
+      return;
+    }
+
+    const txData = res.data;
+    setActivePayment(txData);
+
+    // =========================================================================
+    // 2. MULAI POLLING OTOMATIS STATUS PEMBAYARAN KE /api/payment-status/:reference
+    // =========================================================================
+    if (stopPollingRef.current) {
+      stopPollingRef.current();
+    }
+
+    stopPollingRef.current = startPaymentPolling(
+      txData.reference,
+      ({ transaction, license: updatedLicense }) => {
+        setPaymentSuccess(true);
+        if (onUpgradeSuccess) {
+          onUpgradeSuccess(updatedLicense);
+        }
+        setTimeout(() => {
+          onClose();
+        }, 2200);
+      },
+      (errMsg) => {
+        setPaymentError(errMsg);
+      },
+      2500
     );
+  };
 
-    if (result.success && result.license) {
-      setKeySuccess(result.message);
-      if (onUpgradeSuccess) onUpgradeSuccess(result.license);
-      setTimeout(() => {
-        onClose();
-      }, 1800);
-    } else {
-      setKeyError(result.message);
+  // =========================================================================
+  // 3. SIMULASI BAYAR LUNAS (UNTUK PENGUJIAN INSTAN SANDBOX)
+  // =========================================================================
+  const handleSimulatePayment = async () => {
+    if (!activePayment) return;
+    setIsSimulatingPay(true);
+    const success = await simulatePaymentSuccess(activePayment.reference);
+    setIsSimulatingPay(false);
+    if (!success) {
+      setPaymentError('Simulasi gagal, silakan coba lagi.');
     }
   };
 
-  const handleSimulateTriPayPayment = () => {
-    setIsProcessingPayment(true);
-    setTimeout(() => {
-      // Generate a mock serial key from TriPay callback
-      const generatedSerial = 'UQ-TRIPAY-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString().slice(-4);
-      const res = activateLicenseKey(
-        generatedSerial, 
-        selectedPlan === 'lifetime' ? 'corporate' : selectedPlan === 'yearly' ? 'core' : 'basic',
-        selectedPlan === 'lifetime' ? 120 : selectedPlan === 'yearly' ? 12 : 1
-      );
-      setIsProcessingPayment(false);
-      setShowTriPayCheckout(false);
-      if (res.success && res.license) {
-        setKeySuccess('Pembayaran via TriPay Berhasil Diverifikasi! Lisensi Pro Aktif.');
-        if (onUpgradeSuccess) onUpgradeSuccess(res.license);
-        setTimeout(() => {
-          onClose();
-        }, 1800);
-      }
-    }, 1500);
+  // =========================================================================
+  // 4. AKTIVASI VIA SERIAL KEY MANUAL
+  // =========================================================================
+  const handleActivateSerialKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    setKeyResult(null);
+    const res = activateLicenseKey(serialKeyInput, 'corporate', 12);
+    setKeyResult(res);
+
+    if (res.success && res.license) {
+      if (onUpgradeSuccess) onUpgradeSuccess(res.license);
+      setTimeout(() => {
+        onClose();
+      }, 1600);
+    }
+  };
+
+  const handleCopyCode = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 2000);
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/80 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/80 backdrop-blur-xs animate-in fade-in duration-200">
       <div 
         className="bg-white rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[92vh] animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header Modal */}
-        <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-emerald-700 text-white p-5 relative overflow-hidden">
+        <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-emerald-700 text-white p-5 relative overflow-hidden shrink-0">
           <div className="absolute -right-6 -bottom-6 w-24 h-24 rounded-full bg-white/10 pointer-events-none" />
           
           <div className="flex items-start justify-between relative z-10">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-amber-100 shadow-md border border-white/20">
+              <div className="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-amber-100 shadow-md border border-white/20 shrink-0">
                 <Crown className="w-6 h-6 text-amber-200 fill-amber-300" />
               </div>
-              <div>
-                <span className="text-[10px] bg-white/25 text-white font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider inline-flex items-center gap-1">
-                  <Sparkles className="w-3 h-3 text-amber-200" />
-                  Upgrade Ke Premium
-                </span>
-                <h2 className="text-lg sm:text-xl font-black text-white tracking-tight leading-tight mt-1">
-                  Buka Akses Penuh UsahaQu
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] bg-white/25 text-white font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider inline-flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-amber-200" />
+                    TriPay Gateway
+                  </span>
+                  <span className="text-[10px] bg-emerald-400 text-slate-900 font-black px-2 py-0.5 rounded-full uppercase">
+                    Aktif Otomatis
+                  </span>
+                </div>
+                <h2 className="text-base sm:text-lg font-black text-white tracking-tight leading-tight mt-1 truncate">
+                  Upgrade UsahaQu Pro v1.83
                 </h2>
               </div>
             </div>
 
             <button
               onClick={onClose}
-              className="w-8 h-8 rounded-full bg-black/20 hover:bg-black/30 text-white flex items-center justify-center transition cursor-pointer"
+              className="w-8 h-8 rounded-full bg-black/20 hover:bg-black/30 text-white flex items-center justify-center transition cursor-pointer shrink-0"
             >
               <X className="w-4 h-4" />
             </button>
@@ -148,236 +307,347 @@ export const UpgradeToPremiumModal: React.FC<UpgradeToPremiumModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
-          {/* Keunggulan Paket Premium */}
-          <div>
-            <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider mb-2">
-              Keunggulan Paket Premium
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-              <div className="flex items-start gap-2 p-2 rounded-xl bg-slate-50 border border-slate-100">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-slate-900 block font-bold">5 Ekosistem Bebas</strong>
-                  <span className="text-[11px] text-slate-500">Bengkel, Kedai, Klinik, Ritel & Titip</span>
-                </div>
+        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 custom-scroll">
+          {/* =========================================================
+              VIEW A: PEMBAYARAN SUKSES
+              ========================================================= */}
+          {paymentSuccess ? (
+            <div className="py-8 text-center space-y-3">
+              <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto shadow-inner">
+                <CheckCircle2 className="w-10 h-10 stroke-[2.5]" />
               </div>
-              <div className="flex items-start gap-2 p-2 rounded-xl bg-slate-50 border border-slate-100">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-slate-900 block font-bold">WhatsApp Gateway</strong>
-                  <span className="text-[11px] text-slate-500">Kirim nota otomatis ke pelanggan</span>
-                </div>
-              </div>
-              <div className="flex items-start gap-2 p-2 rounded-xl bg-slate-50 border border-slate-100">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-slate-900 block font-bold">Ekspor Laporan Excel</strong>
-                  <span className="text-[11px] text-slate-500">Unduh rekap buku kas & omset</span>
-                </div>
-              </div>
-              <div className="flex items-start gap-2 p-2 rounded-xl bg-slate-50 border border-slate-100">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-slate-900 block font-bold">Multi-Cabang & HP</strong>
-                  <span className="text-[11px] text-slate-500">Tautkan HP staf tanpa batas</span>
-                </div>
+              <h3 className="text-lg font-black text-slate-900">Pembayaran Berhasil Diverifikasi!</h3>
+              <p className="text-xs text-slate-600 max-w-sm mx-auto">
+                Terima kasih! Lisensi <strong className="text-emerald-700">{currentPlan.name}</strong> Anda telah aktif selama 1 Tahun penuh. Seluruh fitur dan modul kini terbuka bebas.
+              </p>
+              <div className="p-3 bg-emerald-50 rounded-2xl border border-emerald-200 text-xs font-mono text-emerald-800 inline-block font-bold">
+                REF: {activePayment?.reference} • STATUS: PAID
               </div>
             </div>
-          </div>
-
-          {/* Pricing Options */}
-          <div>
-            <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider mb-2">
-              Pilih Paket Berlangganan
-            </h3>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => setSelectedPlan('monthly')}
-                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer relative ${
-                  selectedPlan === 'monthly'
-                    ? 'border-emerald-600 bg-emerald-50/70 ring-2 ring-emerald-500/20'
-                    : 'border-slate-200 hover:border-slate-300 bg-white'
-                }`}
-              >
-                <span className="text-[10px] font-bold text-slate-500 block">Bulanan</span>
-                <span className="text-xs sm:text-sm font-black text-slate-900 block mt-0.5">Rp 49.000</span>
-                <span className="text-[9px] text-slate-400 block mt-0.5">/ 30 Hari</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedPlan('yearly')}
-                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden ${
-                  selectedPlan === 'yearly'
-                    ? 'border-emerald-600 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-sm'
-                    : 'border-slate-200 hover:border-slate-300 bg-white'
-                }`}
-              >
-                <span className="absolute top-0 right-0 bg-amber-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-bl-lg">
-                  HEMAT 40%
-                </span>
-                <span className="text-[10px] font-bold text-emerald-700 block">1 Tahun</span>
-                <span className="text-xs sm:text-sm font-black text-slate-900 block mt-0.5">Rp 349.000</span>
-                <span className="text-[9px] text-slate-400 block mt-0.5">/ 12 Bulan</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedPlan('lifetime')}
-                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer relative ${
-                  selectedPlan === 'lifetime'
-                    ? 'border-emerald-600 bg-emerald-50/70 ring-2 ring-emerald-500/20'
-                    : 'border-slate-200 hover:border-slate-300 bg-white'
-                }`}
-              >
-                <span className="text-[10px] font-bold text-slate-500 block">Lifetime</span>
-                <span className="text-xs sm:text-sm font-black text-slate-900 block mt-0.5">Rp 899.000</span>
-                <span className="text-[9px] text-emerald-700 font-bold block mt-0.5">Bayar 1x</span>
-              </button>
-            </div>
-          </div>
-
-          {/* TriPay Payment Button / Gateway Section */}
-          <div className="pt-1">
-            {!showTriPayCheckout ? (
-              <button
-                type="button"
-                onClick={() => setShowTriPayCheckout(true)}
-                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold text-xs shadow-lg shadow-emerald-700/25 flex items-center justify-center gap-2 transition active:scale-98 cursor-pointer"
-              >
-                <CreditCard className="w-4 h-4" />
-                <span>Upgrade Sekarang via TriPay Payment</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            ) : (
-              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <QrCode className="w-4 h-4 text-emerald-700" />
-                    <span className="text-xs font-black text-slate-900">Pembayaran Resmi TriPay Indonesia</span>
+          ) : activePayment ? (
+            /* =========================================================
+               VIEW B: DETAIL PEMBAYARAN TRIPAY & QRIS / VA CODE
+               ========================================================= */
+            <div className="space-y-4">
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 block uppercase">No. Referensi TriPay</span>
+                    <span className="text-xs font-mono font-black text-slate-800">{activePayment.reference}</span>
                   </div>
-                  <button 
-                    type="button" 
-                    onClick={() => setShowTriPayCheckout(false)}
-                    className="text-[11px] font-bold text-slate-400 hover:text-slate-600"
+                  <div className="text-right">
+                    <span className="text-[10px] font-bold text-slate-400 block uppercase">Total Tagihan</span>
+                    <span className="text-sm font-black text-emerald-700">Rp {activePayment.total_amount.toLocaleString('id-ID')}</span>
+                  </div>
+                </div>
+
+                {/* QRIS View */}
+                {activePayment.payment_method === 'QRIS' && activePayment.qr_url && (
+                  <div className="bg-white p-4 rounded-2xl border border-slate-200 text-center space-y-2">
+                    <span className="text-[11px] font-extrabold text-slate-700 block">
+                      Scan QRIS Menggunakan Aplikasi Bank / E-Wallet Anda
+                    </span>
+                    <img 
+                      src={activePayment.qr_url} 
+                      alt="QRIS Code" 
+                      className="w-48 h-48 mx-auto rounded-xl shadow-inner border border-slate-100" 
+                    />
+                    <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                      <Clock className="w-3.5 h-3.5 animate-pulse" />
+                      <span>Menunggu pembayaran... (Terverifikasi Otomatis)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Virtual Account View */}
+                {activePayment.payment_method !== 'QRIS' && (
+                  <div className="bg-white p-4 rounded-2xl border border-slate-200 text-center space-y-2">
+                    <span className="text-[11px] font-bold text-slate-500 block">
+                      Nomor Virtual Account ({activePayment.payment_method})
+                    </span>
+                    <div className="flex items-center justify-center gap-2">
+                      <span className="text-xl font-mono font-black text-slate-900 tracking-wider">
+                        {activePayment.pay_code || '88012081234567'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyCode(activePayment.pay_code || '88012081234567')}
+                        className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+                        title="Salin Nomor VA"
+                      >
+                        {isCopied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                      <Clock className="w-3.5 h-3.5 animate-pulse" />
+                      <span>Sistem mendeteksi transfer secara otomatis</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tombol Buka Webview TriPay Asli / Simulator */}
+                <div className="space-y-2 pt-1">
+                  <a
+                    href={activePayment.checkout_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-black text-xs shadow-md flex items-center justify-center gap-2 transition cursor-pointer"
                   >
-                    Batal
+                    <ExternalLink className="w-4 h-4" />
+                    <span>Buka Halaman Pembayaran TriPay</span>
+                  </a>
+
+                  {/* Simulator Sandbox Testing */}
+                  <button
+                    type="button"
+                    onClick={handleSimulatePayment}
+                    disabled={isSimulatingPay}
+                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition active:scale-98 cursor-pointer"
+                  >
+                    {isSimulatingPay ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Memproses Simulasi TriPay...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Simulasikan Bayar Lunas (Testing)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (stopPollingRef.current) stopPollingRef.current();
+                      setActivePayment(null);
+                    }}
+                    className="w-full py-2 text-center text-xs font-bold text-slate-500 hover:text-slate-700 cursor-pointer"
+                  >
+                    &larr; Ganti Paket atau Metode Bayar
                   </button>
                 </div>
-
-                <div className="p-3 bg-white rounded-xl border border-slate-200 text-xs text-slate-600 space-y-1">
-                  <div className="flex justify-between font-medium">
-                    <span>Paket Dipilih:</span>
-                    <strong className="text-slate-900 uppercase">{selectedPlan}</strong>
-                  </div>
-                  <div className="flex justify-between font-black text-sm text-emerald-700 pt-1 border-t border-slate-100">
-                    <span>Total Tagihan:</span>
-                    <span>{selectedPlan === 'lifetime' ? 'Rp 899.000' : selectedPlan === 'yearly' ? 'Rp 349.000' : 'Rp 49.000'}</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 pt-1">
-                    Mendukung QRIS (Gopay/OVO/Dana/BCA Mobile), Virtual Account (BCA, BRI, Mandiri, BNI), & Gerai Retail.
-                  </p>
-                </div>
-
+              </div>
+            </div>
+          ) : (
+            /* =========================================================
+               VIEW C: PILIHAN PAKET & METODE PEMBAYARAN TRIPAY
+               ========================================================= */
+            <>
+              {/* Tab Switcher: TriPay vs Serial Key */}
+              <div className="flex border-b border-slate-200 pb-2 gap-2">
                 <button
                   type="button"
-                  onClick={handleSimulateTriPayPayment}
-                  disabled={isProcessingPayment}
-                  className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md transition active:scale-98 flex items-center justify-center gap-2 cursor-pointer"
+                  onClick={() => setShowKeyTab(false)}
+                  className={`text-xs font-black pb-1.5 transition border-b-2 cursor-pointer ${
+                    !showKeyTab
+                      ? 'border-emerald-600 text-emerald-800'
+                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
                 >
-                  {isProcessingPayment ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>Menghubungkan ke TriPay Gateway...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Bayar Instan QRIS / VA (Konfirmasi Otomatis)</span>
-                    </>
-                  )}
+                  Pilihan Paket & TriPay Gateway
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowKeyTab(true)}
+                  className={`text-xs font-black pb-1.5 transition border-b-2 cursor-pointer ${
+                    showKeyTab
+                      ? 'border-emerald-600 text-emerald-800'
+                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Aktivasi Serial Key Manual
                 </button>
               </div>
-            )}
-          </div>
 
-          {/* Aktivasi via Serial Key */}
-          <div className="pt-2 border-t border-slate-100">
-            <h4 className="text-[11px] font-bold text-slate-600 mb-1.5 flex items-center gap-1.5">
-              <Key className="w-3.5 h-3.5 text-slate-500" />
-              <span>Sudah Memiliki Serial Key Aktivasi?</span>
-            </h4>
-            <form onSubmit={handleActivateKey} className="flex gap-2">
-              <input
-                type="text"
-                value={serialKey}
-                onChange={(e) => setSerialKey(e.target.value)}
-                placeholder="Contoh: UQ-PRO-8899-2026"
-                className="flex-1 px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono font-bold uppercase focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <button
-                type="submit"
-                className="py-2 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-extrabold text-xs transition active:scale-95 cursor-pointer shrink-0"
-              >
-                Aktivasi
-              </button>
-            </form>
+              {!showKeyTab ? (
+                <div className="space-y-4">
+                  {/* 1. Tampilan 3 Pilihan Paket */}
+                  <div className="space-y-2.5">
+                    <label className="text-xs font-black text-slate-800 uppercase tracking-wider block">
+                      1. Pilih Paket Usaha
+                    </label>
 
-            {keyError && (
-              <p className="text-[11px] text-rose-600 font-semibold mt-1.5">{keyError}</p>
-            )}
-            {keySuccess && (
-              <p className="text-[11px] text-emerald-700 font-bold mt-1.5 flex items-center gap-1">
-                <Check className="w-3.5 h-3.5" />
-                <span>{keySuccess}</span>
-              </p>
-            )}
-          </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      {UPGRADE_PLANS.map((plan) => {
+                        const isSelected = selectedPlanId === plan.id;
+                        return (
+                          <div
+                            key={plan.id}
+                            onClick={() => setSelectedPlanId(plan.id)}
+                            className={`p-3 rounded-2xl border text-left transition-all cursor-pointer relative flex flex-col justify-between ${
+                              isSelected
+                                ? 'border-emerald-600 bg-emerald-50/60 ring-2 ring-emerald-500/20 shadow-sm'
+                                : 'border-slate-200 hover:border-slate-300 bg-white'
+                            }`}
+                          >
+                            {plan.badge && (
+                              <span className="absolute -top-2 right-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white text-[8px] font-black px-2 py-0.5 rounded-full shadow-xs">
+                                {plan.badge}
+                              </span>
+                            )}
 
-          {/* Quick Developer Testing Controls (Simulasi Status) */}
-          <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
-            <span>Tes Mode:</span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const updated = simulateTrialExpiryForTesting();
-                  if (onUpgradeSuccess) onUpgradeSuccess(updated);
-                  alert("Status berhasil dialihkan ke 'free_lifetime'. Modul selain modul utama sekarang dalam status Terkunci (Gembok).");
-                }}
-                className="underline hover:text-slate-700 cursor-pointer"
-              >
-                Simulasikan Free Lifetime
-              </button>
-              <span>•</span>
-              <button
-                type="button"
-                onClick={() => {
-                  const updated = resetTrialForTesting();
-                  if (onUpgradeSuccess) onUpgradeSuccess(updated);
-                  alert("Status berhasil direset ke Trial 10 Hari (Semua Modul Terbuka).");
-                }}
-                className="underline hover:text-slate-700 cursor-pointer"
-              >
-                Reset Trial 10 Hari
-              </button>
-            </div>
-          </div>
-        </div>
+                            <div>
+                              <h4 className="text-xs font-extrabold text-slate-900 leading-tight">
+                                {plan.name}
+                              </h4>
+                              <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                                {plan.tagline}
+                              </p>
+                            </div>
 
-        {/* Modal Footer */}
-        <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs">
-          <span className="text-[11px] text-slate-500">
-            Modul Utama Anda: <strong className="text-slate-800">{currentLicense.selected_primary_module.toUpperCase()}</strong> (Gratis Selamanya)
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-xs font-bold text-slate-600 hover:text-slate-900 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition cursor-pointer"
-          >
-            Tutup
-          </button>
+                            <div className="mt-3 pt-2 border-t border-slate-100">
+                              <span className="text-sm font-black text-slate-900 block">
+                                Rp {plan.price.toLocaleString('id-ID')}
+                              </span>
+                              <span className="text-[9px] text-slate-400 font-medium">
+                                {plan.period}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Ringkasan Fitur Paket Terpilih */}
+                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-xs space-y-1.5">
+                      <span className="font-extrabold text-slate-800 text-[11px] block">
+                        Benefit Termasuk di {currentPlan.name}:
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[11px] text-slate-600">
+                        {currentPlan.features.map((feat, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span>{feat}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 2. Pilihan Saluran Pembayaran TriPay */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-black text-slate-800 uppercase tracking-wider block">
+                      2. Pilih Saluran Pembayaran (TriPay)
+                    </label>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {PAYMENT_CHANNELS.map((ch) => {
+                        const isSelected = selectedChannel === ch.id;
+                        return (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            onClick={() => setSelectedChannel(ch.id)}
+                            className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition cursor-pointer ${
+                              isSelected
+                                ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold ring-1 ring-emerald-500'
+                                : 'border-slate-200 hover:border-slate-300 bg-white text-slate-700'
+                            }`}
+                          >
+                            <span className="text-lg shrink-0">{ch.icon}</span>
+                            <div className="min-w-0 flex-1">
+                              <span className="text-xs font-bold block truncate">{ch.name}</span>
+                              <span className="text-[10px] text-slate-400 block truncate">{ch.desc}</span>
+                            </div>
+                            {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Input Email Tenant */}
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-700 block">
+                      Email Konfirmasi Lisensi
+                    </label>
+                    <input
+                      type="email"
+                      value={customerEmail}
+                      onChange={(e) => setCustomerEmail(e.target.value)}
+                      placeholder="email-anda@domain.com"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+                      required
+                    />
+                  </div>
+
+                  {paymentError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                      <span>{paymentError}</span>
+                    </div>
+                  )}
+
+                  {/* Tombol Pilih & Bayar */}
+                  <button
+                    type="button"
+                    onClick={handleInitiatePayment}
+                    disabled={isCreatingPayment}
+                    className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-black text-xs shadow-lg shadow-emerald-700/25 flex items-center justify-center gap-2 transition active:scale-98 cursor-pointer"
+                  >
+                    {isCreatingPayment ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Menghubungi TriPay Gateway...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CreditCard className="w-4 h-4" />
+                        <span>Pilih & Bayar Rp {currentPlan.price.toLocaleString('id-ID')}</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                /* Tab Aktivasi Serial Key Manual */
+                <form onSubmit={handleActivateSerialKey} className="space-y-3 pt-2">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Masukkan Serial Key Lisensi UsahaQu
+                    </label>
+                    <input
+                      type="text"
+                      value={serialKeyInput}
+                      onChange={(e) => setSerialKeyInput(e.target.value)}
+                      placeholder="UQ-PRO-XXXX-XXXX-XXXX"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-mono font-bold uppercase focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      required
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Serial key diterbitkan resmi setelah transaksi TriPay terkonfirmasi.
+                    </p>
+                  </div>
+
+                  {keyResult && (
+                    <div
+                      className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                        keyResult.success
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : 'bg-rose-50 border-rose-200 text-rose-700'
+                      }`}
+                    >
+                      {keyResult.success ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                      )}
+                      <span>{keyResult.message}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-extrabold text-xs transition cursor-pointer"
+                  >
+                    Aktifkan Lisensi Sekarang
+                  </button>
+                </form>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>

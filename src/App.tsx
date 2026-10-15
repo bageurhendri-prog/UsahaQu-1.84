@@ -178,6 +178,26 @@ export default function App() {
     openDatabase()
       .then(() => seedInitialDataIfEmpty())
       .catch((err) => console.warn('[IndexedDB Init]:', err));
+
+    // Listener otomatis pembaruan lisensi dari TriPay Webhook / Polling
+    const handleLicenseUpdate = (event: any) => {
+      console.log('[App] Lisensi diperbarui via TriPay:', event.detail);
+      const newLicense = getLicense();
+      if (newLicense.is_paid) {
+        setSubscription((prev) => ({
+          ...prev,
+          planId: 'corporate',
+          planName: 'Full Versi Permanen (TriPay Terverifikasi)',
+          isTrialActive: false,
+          isSubscribed: true
+        }));
+      }
+    };
+
+    window.addEventListener('usahaqu:license-updated', handleLicenseUpdate);
+    return () => {
+      window.removeEventListener('usahaqu:license-updated', handleLicenseUpdate);
+    };
   }, []);
 
   const handleLoginSuccess = (session: UserSession) => {
