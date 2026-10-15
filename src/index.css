@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .pt-safe {
+    padding-top: max(env(safe-area-inset-top, 0px), 0.75rem);
+  }
+  .pb-safe {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.75rem);
+  }
+  .pl-safe {
+    padding-left: max(env(safe-area-inset-left, 0px), 1rem);
+  }
+  .pr-safe {
+    padding-right: max(env(safe-area-inset-right, 0px), 1rem);
+  }
+  .safe-top-only {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .safe-bottom-only {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+/* Cetak Thermal Nota Kasir (58mm/80mm) POS Core Offline */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #pos-thermal-receipt,
+  #pos-thermal-receipt * {
+    visibility: visible !important;
+  }
+  #pos-thermal-receipt {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 58mm !important;
+    max-width: 58mm !important;
+    margin: 0 auto !important;
+    padding: 2mm !important;
+    box-shadow: none !important;
+    border: none !important;
+    font-family: monospace !important;
+    font-size: 11px !important;
+    line-height: 1.25 !important;
+    z-index: 999999 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
