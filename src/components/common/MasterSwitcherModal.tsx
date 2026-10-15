@@ -22,6 +22,7 @@ import {
   setPrimaryModule, 
   activateLicenseKey 
 } from '../../engine/licenseEngine';
+import { UpgradeToPremiumModal } from '../modals/UpgradeToPremiumModal';
 
 export type EcosystemId = 'bengkel' | 'kedai' | 'klinik' | 'ritel' | 'titip';
 
@@ -133,6 +134,11 @@ export const MasterSwitcherModal: React.FC<MasterSwitcherModalProps> = ({
   const [showKeyInput, setShowKeyInput] = React.useState(false);
   const [keyMessage, setKeyMessage] = React.useState<string | null>(null);
 
+  // Upgrade Modal State
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = React.useState(false);
+  const [upgradeLockedTitle, setUpgradeLockedTitle] = React.useState('');
+  const [upgradeLockedDesc, setUpgradeLockedDesc] = React.useState('');
+
   React.useEffect(() => {
     if (isOpen) {
       setLicenseState(getLicense());
@@ -143,12 +149,12 @@ export const MasterSwitcherModal: React.FC<MasterSwitcherModalProps> = ({
 
   const trialDays = getTrialDaysRemaining();
 
-  const handleModuleClick = (moduleId: EcosystemId) => {
+  const handleModuleClick = (moduleId: EcosystemId, moduleItem: EcosystemModule) => {
     const hasAccess = canAccessModule(moduleId);
     if (!hasAccess) {
-      const msg = `Modul ${moduleId.toUpperCase()} dikunci pada status 'Free Lifetime'. Modul utama aktif Anda adalah '${license.selected_primary_module.toUpperCase()}'. Masukkan Lisensi Pro untuk membuka seluruh modul sekaligus!`;
-      alert(msg);
-      setShowKeyInput(true);
+      setUpgradeLockedTitle(`Modul ${moduleItem.name} Terkunci`);
+      setUpgradeLockedDesc(`Modul ini dikunci pada mode Free Lifetime. Modul utama aktif Anda adalah '${license.selected_primary_module.toUpperCase()}'. Upgrade ke Pro untuk membuka 5 ekosistem sekaligus!`);
+      setIsUpgradeModalOpen(true);
       return;
     }
     onSelectEcosystem(moduleId);
@@ -271,38 +277,45 @@ export const MasterSwitcherModal: React.FC<MasterSwitcherModalProps> = ({
             const Icon = item.icon;
             const isCurrent = activeEcosystem === item.id;
             const hasAccess = canAccessModule(item.id);
+            const isPrimary = license.selected_primary_module === item.id;
 
             return (
               <button
                 key={item.id}
-                onClick={() => handleModuleClick(item.id)}
+                type="button"
+                onClick={() => handleModuleClick(item.id, item)}
                 className={`w-full text-left p-3.5 rounded-2xl border transition-all duration-200 flex items-start gap-3.5 relative group cursor-pointer ${
                   isCurrent 
                     ? 'bg-white border-emerald-500 shadow-md ring-2 ring-emerald-500/20' 
                     : hasAccess
                     ? 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-xs'
-                    : 'bg-slate-100/80 border-slate-200 opacity-75 hover:opacity-100'
+                    : 'locked-card bg-slate-100/90 border-slate-300/80 hover:border-amber-400'
                 }`}
               >
                 {/* Module Icon */}
                 <div 
-                  className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 text-white font-bold shadow-xs ${
+                  className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 text-white font-bold shadow-xs relative ${
                     item.id === 'bengkel' ? 'bg-[#008952]' :
                     item.id === 'kedai' ? 'bg-emerald-700' :
                     item.id === 'klinik' ? 'bg-teal-700' :
                     item.id === 'ritel' ? 'bg-[#1E3A8A]' : 'bg-[#C2410C]'
                   }`}
                 >
-                  <Icon className="w-5 h-5" />
+                  <Icon className={`w-5 h-5 ${!hasAccess ? 'opacity-60' : ''}`} />
+                  {!hasAccess && (
+                    <div className="absolute inset-0 bg-slate-900/50 rounded-xl flex items-center justify-center">
+                      <Lock className="w-4 h-4 text-amber-300" />
+                    </div>
+                  )}
                 </div>
 
                 {/* Details */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-bold text-sm text-slate-900 group-hover:text-emerald-700 transition-colors">
                       {item.name}
                     </span>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                    <span className={`text-[9px] font-semibold px-1.5 py-0.2 rounded-md ${
                       item.layoutType === 'Sidebar Layout' 
                         ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                         : item.layoutType === 'Grid Layout'
@@ -311,27 +324,42 @@ export const MasterSwitcherModal: React.FC<MasterSwitcherModalProps> = ({
                     }`}>
                       {item.layoutType}
                     </span>
+
+                    {/* Badges: Modul Utama vs Terkunci vs Trial Aktif */}
                     {!hasAccess ? (
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded ml-auto bg-amber-100 text-amber-800 flex items-center gap-1 border border-amber-300">
-                        <Lock className="w-2.5 h-2.5" />
-                        Terkunci Pro
+                      <span className="lock-badge-pill ml-auto">
+                        <Lock className="w-2.5 h-2.5 text-amber-700" />
+                        <span>Terkunci Pro</span>
                       </span>
-                    ) : item.badge ? (
-                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ml-auto ${
-                        isCurrent 
-                          ? 'bg-emerald-600 text-white' 
-                          : 'bg-slate-100 text-slate-600'
-                      }`}>
-                        {isCurrent ? 'Sedang Aktif' : item.badge}
+                    ) : isPrimary ? (
+                      <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full ml-auto bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                        <Check className="w-2.5 h-2.5 stroke-[3]" />
+                        <span>Modul Utama (Aktif)</span>
                       </span>
-                    ) : null}
+                    ) : isCurrent ? (
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-full ml-auto bg-emerald-600 text-white">
+                        Sedang Aktif
+                      </span>
+                    ) : (
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded ml-auto bg-slate-100 text-slate-600">
+                        {license.status === 'trial' ? 'Trial Aktif' : item.badge || 'Tersedia'}
+                      </span>
+                    )}
                   </div>
+
                   <p className="text-xs font-semibold text-slate-700 mt-0.5">
                     {item.tagline}
                   </p>
-                  <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
-                    {item.description}
-                  </p>
+
+                  {!hasAccess ? (
+                    <p className="text-[11px] text-amber-800 font-bold mt-1 flex items-center gap-1">
+                      <span>🔒 Modul terkunci di Free Lifetime • Klik untuk Upgrade</span>
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
+                      {item.description}
+                    </p>
+                  )}
                 </div>
 
                 {/* Checked icon indicator */}
@@ -376,6 +404,18 @@ export const MasterSwitcherModal: React.FC<MasterSwitcherModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Modal Pop-up Upgrade ke Premium */}
+      <UpgradeToPremiumModal
+        isOpen={isUpgradeModalOpen}
+        onClose={() => setIsUpgradeModalOpen(false)}
+        lockedItemTitle={upgradeLockedTitle}
+        lockedItemDescription={upgradeLockedDesc}
+        onUpgradeSuccess={(newLic) => {
+          setLicenseState(newLic);
+          setIsUpgradeModalOpen(false);
+        }}
+      />
     </div>
   );
 };

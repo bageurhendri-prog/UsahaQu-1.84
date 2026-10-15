@@ -37,8 +37,13 @@ import {
   DollarSign,
   TrendingUp,
   Tag,
-  Share2
+  Share2,
+  Lock,
+  FileSpreadsheet,
+  Crown
 } from 'lucide-react';
+import { canAccessFeature, getLicense } from '../../engine/licenseEngine';
+import { UpgradeToPremiumModal } from '../modals/UpgradeToPremiumModal';
 import {
   PosProduct,
   CartItem,
@@ -103,6 +108,11 @@ export const PosCoreView: React.FC<PosCoreViewProps> = ({
   const [formPrice, setFormPrice] = useState<string>('');
   const [formStock, setFormStock] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Upgrade Modal State
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState<boolean>(false);
+  const [upgradeLockedTitle, setUpgradeLockedTitle] = useState<string>('');
+  const [upgradeLockedDesc, setUpgradeLockedDesc] = useState<string>('');
 
   // Toast Notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -401,6 +411,50 @@ export const PosCoreView: React.FC<PosCoreViewProps> = ({
     const rawText = formatReceiptText(tx);
     const encoded = encodeURIComponent(rawText);
     window.open(`https://api.whatsapp.com/send?text=${encoded}`, '_blank');
+  };
+
+  const handleAutomatedWaGateway = () => {
+    if (!canAccessFeature('wa_gateway')) {
+      setUpgradeLockedTitle('WhatsApp Gateway Otomatis Terkunci');
+      setUpgradeLockedDesc('Pengiriman nota otomatis tanpa buka aplikasi WA membutuhkan lisensi UsahaQu Pro/Premium.');
+      setIsUpgradeModalOpen(true);
+      return;
+    }
+    showToast('Struk berhasil dikirim otomatis via server WA Gateway!');
+  };
+
+  const handleExportExcel = () => {
+    if (!canAccessFeature('export_excel')) {
+      setUpgradeLockedTitle('Fitur Ekspor Excel Terkunci');
+      setUpgradeLockedDesc('Ekspor Laporan Keuangan ke format Excel/Spreadsheet dibatasi pada mode Free Lifetime. Upgrade ke UsahaQu Pro untuk membuka ekspor tak terbatas!');
+      setIsUpgradeModalOpen(true);
+      return;
+    }
+
+    if (todayTransactions.length === 0) {
+      showToast('Belum ada transaksi hari ini untuk diekspor!');
+      return;
+    }
+
+    const headers = ['Invoice', 'Tanggal', 'Waktu', 'Pelanggan', 'Metode Bayar', 'Total Item', 'Total Bayar (Rp)'];
+    const rows = todayTransactions.map((t) => [
+      t.invoiceNo,
+      t.date,
+      t.time,
+      `"${t.customerName}"`,
+      t.paymentMethod.toUpperCase(),
+      t.totalItems,
+      t.total
+    ]);
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Laporan_Penjualan_POS_${todaySummary?.todayDate || 'HariIni'}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('Laporan penjualan berhasil diunduh (.CSV/Excel)!');
   };
 
   return (
@@ -1031,13 +1085,36 @@ export const PosCoreView: React.FC<PosCoreViewProps> = ({
 
             {/* List of Today's Transactions */}
             <div className="bg-white rounded-3xl shadow-xs border border-slate-200 overflow-hidden">
-              <div className="p-4 border-b border-slate-100 flex justify-between items-center">
-                <h3 className="font-extrabold text-xs text-slate-900">
-                  Daftar Penjualan Hari Ini
-                </h3>
-                <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-md">
-                  {todaySummary?.todayDate || 'Hari Ini'}
-                </span>
+              <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+                <div>
+                  <h3 className="font-extrabold text-xs text-slate-900">
+                    Daftar Penjualan Hari Ini
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {todayTransactions.length} Transaksi tersimpan lokal di IndexedDB
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-md">
+                    {todaySummary?.todayDate || 'Hari Ini'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleExportExcel}
+                    className="py-1.5 px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer border border-emerald-200"
+                    title="Ekspor Laporan ke format Excel (.CSV)"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>Ekspor Excel</span>
+                    {!canAccessFeature('export_excel') && (
+                      <span className="text-[9px] bg-amber-100 text-amber-900 font-black px-1.5 py-0.2 rounded flex items-center gap-0.5 border border-amber-300">
+                        <Lock className="w-2.5 h-2.5 text-amber-700" />
+                        <span>Pro</span>
+                      </span>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {todayTransactions.length === 0 ? (
@@ -1214,10 +1291,27 @@ export const PosCoreView: React.FC<PosCoreViewProps> = ({
               <button
                 type="button"
                 onClick={() => handleShareWhatsApp(activeReceipt)}
-                className="w-full py-2 px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                className="w-full py-2 px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer border border-emerald-200"
               >
                 <Send className="w-3.5 h-3.5" />
-                <span>Kirim Teks Struk via WhatsApp</span>
+                <span>Kirim Teks Struk via WhatsApp (Manual)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleAutomatedWaGateway}
+                className="w-full py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs flex items-center justify-between transition cursor-pointer border border-slate-200"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Crown className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Kirim Otomatis Server WA Gateway</span>
+                </div>
+                {!canAccessFeature('wa_gateway') && (
+                  <span className="text-[9px] bg-amber-100 text-amber-900 font-black px-1.5 py-0.2 rounded flex items-center gap-0.5 border border-amber-300">
+                    <Lock className="w-2.5 h-2.5 text-amber-700" />
+                    <span>Pro</span>
+                  </span>
+                )}
               </button>
 
               <button
@@ -1346,6 +1440,14 @@ export const PosCoreView: React.FC<PosCoreViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Upgrade to Premium Modal */}
+      <UpgradeToPremiumModal
+        isOpen={isUpgradeModalOpen}
+        onClose={() => setIsUpgradeModalOpen(false)}
+        lockedItemTitle={upgradeLockedTitle}
+        lockedItemDescription={upgradeLockedDesc}
+      />
     </div>
   );
 };

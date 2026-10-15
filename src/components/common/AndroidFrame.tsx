@@ -99,6 +99,31 @@ export const AndroidFrame: React.FC<AndroidFrameProps> = ({
       >
         {/* Application Viewport Container */}
         <div className="relative flex-1 flex flex-col bg-slate-50 overflow-hidden">
+          {/* Mobile Top Header Module Switcher */}
+          {onOpenMasterSwitcher && (
+            <div className="md:hidden bg-slate-950 text-white px-3.5 py-1.5 flex items-center justify-between text-[11px] shrink-0 z-30 border-b border-slate-800 shadow-xs">
+              <button
+                type="button"
+                onClick={onOpenMasterSwitcher}
+                className="flex items-center gap-2 font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
+                title="Buka UsahaQu Module Switcher"
+              >
+                <span className="w-5 h-5 rounded-lg bg-emerald-600 text-white font-black text-[10px] flex items-center justify-center shadow-xs">UQ</span>
+                <span className="font-extrabold tracking-tight text-white">{activeModuleName.split(' - ')[0]}</span>
+                <span className="text-[10px] text-emerald-300 bg-emerald-950 border border-emerald-800 px-1.5 py-0.2 rounded font-semibold">
+                  Ganti ▾
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={onOpenMasterSwitcher}
+                className="text-[10px] font-bold text-slate-300 hover:text-white px-2 py-0.5 rounded-lg bg-white/10 hover:bg-white/20 transition cursor-pointer"
+              >
+                5 Modul
+              </button>
+            </div>
+          )}
+
           {/* Scrollable Viewport - Terisolasi agar konten tidak pernah menembus status bar maupun navigation bar */}
           <div className={`flex-1 overflow-y-auto overflow-x-hidden flex flex-col bg-slate-50 scrollbar-none ${bottomBar ? 'pb-6' : ''}`}>
             {children}
