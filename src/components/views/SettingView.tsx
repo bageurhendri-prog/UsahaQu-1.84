@@ -52,6 +52,15 @@ import {
 } from '../../utils/licenseManager';
 import { STORES } from '../../db/indexedDbManager';
 import { getLicense, getTrialDaysRemaining } from '../../engine/licenseEngine';
+import { 
+  exportDataToJSON, 
+  importDataFromJSON, 
+  simulateExpireTrial, 
+  simulatePaymentSuccess, 
+  resetTrialSimulation 
+} from '../../utils/backupRestore';
+import { checkForAppUpdates } from '../../utils/swRegistration';
+
 
 interface SettingViewProps {
   initialTab?: string;
@@ -136,6 +145,10 @@ export const SettingView: React.FC<SettingViewProps> = ({
   const [restorePreview, setRestorePreview] = useState<any | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreSuccess, setRestoreSuccess] = useState(false);
+  const [isExportingFull, setIsExportingFull] = useState(false);
+  const [fullRestoreResult, setFullRestoreResult] = useState<any | null>(null);
+  const [simulatorNotice, setSimulatorNotice] = useState<{ type: 'success' | 'info'; msg: string } | null>(null);
+  const [swUpdateStatus, setSwUpdateStatus] = useState<{ checking: boolean; msg: string | null }>({ checking: false, msg: null });
 
   // 4. Reset State (Clean slate vs demo vs daily)
   const [resetConfirmationText, setResetConfirmationText] = useState('');
@@ -184,6 +197,20 @@ export const SettingView: React.FC<SettingViewProps> = ({
     localStorage.setItem('bq_theme', themeId);
     setThemeSaved(true);
     setTimeout(() => setThemeSaved(false), 2000);
+  };
+
+  // Ekspor Komprehensif Seluruh Isi IndexedDB (19 Master Data + POS Core + Lisensi)
+  const handleFullExportToJSON = async () => {
+    try {
+      setIsExportingFull(true);
+      const payload = await exportDataToJSON(true);
+      setBackupDownloaded(true);
+      setTimeout(() => setBackupDownloaded(false), 3000);
+    } catch (err: any) {
+      alert(`Gagal mengekspor data IndexedDB: ${err.message || err}`);
+    } finally {
+      setIsExportingFull(false);
+    }
   };
 
   const handleDownloadBackup = () => {
@@ -237,13 +264,14 @@ export const SettingView: React.FC<SettingViewProps> = ({
 
     setRestoreFile(file);
     setRestoreError(null);
+    setFullRestoreResult(null);
 
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
         const parsed = JSON.parse(event.target?.result as string);
-        if (!parsed.data && !parsed.queues) {
-          throw new Error('Format berkas tidak sesuai dengan skema data cadangan Bengkel Qu.');
+        if (!parsed.data && !parsed.queues && !parsed.pos_catalog) {
+          throw new Error('Format berkas tidak sesuai dengan skema data cadangan UsahaQu.');
         }
         setRestorePreview(parsed.data || parsed);
       } catch (err: any) {
@@ -254,15 +282,55 @@ export const SettingView: React.FC<SettingViewProps> = ({
     reader.readAsText(file);
   };
 
-  const handleExecuteRestore = () => {
-    if (!restorePreview) return;
-    onRestoreData(restorePreview);
-    setRestoreSuccess(true);
-    setTimeout(() => {
-      setRestoreSuccess(false);
-      setRestoreFile(null);
-      setRestorePreview(null);
-    }, 2500);
+  const handleExecuteRestore = async () => {
+    if (!restoreFile && !restorePreview) return;
+    try {
+      if (restoreFile) {
+        const result = await importDataFromJSON(restoreFile);
+        setFullRestoreResult(result);
+      }
+      if (restorePreview) {
+        onRestoreData(restorePreview);
+      }
+      setRestoreSuccess(true);
+      setTimeout(() => {
+        setRestoreSuccess(false);
+      }, 4000);
+    } catch (err: any) {
+      setRestoreError(`Gagal memulihkan database: ${err.message || err}`);
+    }
+  };
+
+  // Handlers Simulator Lisensi (Dev Tool)
+  const handleSimulateExpireTrial = () => {
+    const lic = simulateExpireTrial();
+    setSimulatorNotice({
+      type: 'info',
+      msg: `Trial berhasil dimajukan ke masa lalu! Status otomatis beralih ke 'free_lifetime'. Modul utama '${lic.selected_primary_module.toUpperCase()}' tetap aktif 100%, modul lain terkunci gembok.`
+    });
+  };
+
+  const handleSimulatePaymentSuccess = () => {
+    const lic = simulatePaymentSuccess('Paket Ultimate All Modul', 12);
+    setSimulatorNotice({
+      type: 'success',
+      msg: `Pembayaran TriPay disimulasikan sukses! Lisensi ditingkatkan ke 'pro_active' (+1 Tahun). Seluruh 5 modul & fitur premium terbuka bebas gembok!`
+    });
+  };
+
+  const handleResetTrialSimulation = () => {
+    resetTrialSimulation();
+    setSimulatorNotice({
+      type: 'info',
+      msg: `Status lisensi berhasil direset kembali ke masa uji coba 10 hari baru (Trial Aktif).`
+    });
+  };
+
+  // Handler Cek Update PWA Service Worker
+  const handleCheckSWUpdate = async () => {
+    setSwUpdateStatus({ checking: true, msg: 'Memeriksa versi Service Worker...' });
+    const res = await checkForAppUpdates();
+    setSwUpdateStatus({ checking: false, msg: res.message });
   };
 
   const handleExecuteReset = () => {
@@ -396,12 +464,20 @@ export const SettingView: React.FC<SettingViewProps> = ({
             Reset
           </button>
           <button
+            onClick={() => setActiveTab('setting-simulator')}
+            className={`flex-1 min-w-[85px] py-1.5 px-2 rounded-lg font-bold transition-all text-center cursor-pointer whitespace-nowrap ${
+              activeTab === 'setting-simulator' ? 'bg-amber-400 text-slate-900 shadow-xs' : 'text-amber-200 hover:text-white'
+            }`}
+          >
+            🧪 Simulator Lisensi
+          </button>
+          <button
             onClick={() => setActiveTab('setting-update')}
             className={`flex-1 min-w-[75px] py-1.5 px-2 rounded-lg font-bold transition-all text-center cursor-pointer whitespace-nowrap ${
               activeTab === 'setting-update' ? 'bg-white text-[#008952] shadow-xs' : 'text-emerald-100'
             }`}
           >
-            Info App
+            Info & PWA
           </button>
         </div>
       </div>
@@ -526,13 +602,35 @@ export const SettingView: React.FC<SettingViewProps> = ({
               </div>
             </div>
 
+            {/* FULL INDEXEDDB BACKUP BUTTON (exportDataToJSON) */}
+            <div className="bg-emerald-50 border border-emerald-300 rounded-2xl p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-[#008952]" />
+                <span className="font-extrabold text-xs text-slate-900">
+                  Ekspor Penuh Seluruh IndexedDB (19 Master Data + POS Core + Lisensi)
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                Fungsi <code>exportDataToJSON()</code> mengambil seluruh isi tabel lokal IndexedDB (BengkelQu, KedaiQu, KlinikQu, RitelQu, TitipQu, Katalog Kasir & Riwayat Transaksi) beserta metadata lisensi offline ke dalam file .json terformat.
+              </p>
+              <button
+                type="button"
+                disabled={isExportingFull}
+                onClick={handleFullExportToJSON}
+                className="w-full bg-[#008952] hover:bg-emerald-700 active:scale-95 text-white font-extrabold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-700/20 transition-all cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>{isExportingFull ? 'Mengekspor Seluruh IndexedDB...' : '⚡ Unduh Cadangan Penuh (exportDataToJSON)'}</span>
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={handleDownloadBackup}
-              className="w-full bg-[#008952] hover:bg-emerald-700 active:scale-95 text-white font-bold py-3 px-4 rounded-2xl text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-700/20 transition-all cursor-pointer"
+              className="w-full bg-slate-800 hover:bg-slate-900 active:scale-95 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
             >
               <Download className="w-4 h-4" />
-              <span>Ekspor & Unduh Berkas Cadangan (.JSON)</span>
+              <span>Ekspor Parsial Sesuai Centang (.JSON)</span>
             </button>
           </div>
         )}
@@ -591,35 +689,41 @@ export const SettingView: React.FC<SettingViewProps> = ({
               <div className="bg-white rounded-2xl p-4 shadow-xs border border-emerald-300 space-y-3">
                 <div className="flex items-center gap-2 pb-2 border-b border-slate-100 text-[#008952]">
                   <FileCheck className="w-4 h-4" />
-                  <span className="font-bold text-xs">Pratinjau Data yang Ditemukan</span>
+                  <span className="font-bold text-xs">Pratinjau Berkas Cadangan UsahaQu</span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="bg-slate-50 p-2 rounded-xl">
                     <span className="text-[10px] text-slate-400 block">Antrian Servis</span>
-                    <span className="font-bold text-slate-800">{restorePreview.queues?.length || 0} Tiket</span>
+                    <span className="font-bold text-slate-800">{restorePreview.queues?.length || restorePreview.data?.queues?.length || 0} Tiket</span>
                   </div>
                   <div className="bg-slate-50 p-2 rounded-xl">
                     <span className="text-[10px] text-slate-400 block">Suku Cadang / Stok</span>
-                    <span className="font-bold text-slate-800">{restorePreview.spareparts?.length || 0} Item</span>
+                    <span className="font-bold text-slate-800">{restorePreview.spareparts?.length || restorePreview.data?.bengkel_spareparts?.length || 0} Item</span>
                   </div>
                   <div className="bg-slate-50 p-2 rounded-xl">
                     <span className="text-[10px] text-slate-400 block">Transaksi Kasir</span>
-                    <span className="font-bold text-slate-800">{restorePreview.transactions?.length || 0} Nota</span>
+                    <span className="font-bold text-slate-800">{restorePreview.transactions?.length || restorePreview.data?.pos_transactions?.length || 0} Nota</span>
                   </div>
                   <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[10px] text-slate-400 block">Pelanggan CRM</span>
-                    <span className="font-bold text-slate-800">{restorePreview.customers?.length || 0} Unit</span>
+                    <span className="text-[10px] text-slate-400 block">Katalog POS Core</span>
+                    <span className="font-bold text-slate-800">{restorePreview.pos_catalog?.length || restorePreview.data?.pos_catalog?.length || 0} Produk</span>
                   </div>
                 </div>
+
+                {fullRestoreResult && (
+                  <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 font-medium">
+                    ✅ {fullRestoreResult.message}
+                  </div>
+                )}
 
                 <button
                   type="button"
                   onClick={handleExecuteRestore}
-                  className="w-full bg-[#008952] hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  className="w-full bg-[#008952] hover:bg-emerald-700 text-white font-extrabold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
                 >
                   <Check className="w-4 h-4" />
-                  <span>Terapkan Pemulihan Sekarang</span>
+                  <span>Pulihkan Seluruh Tabel IndexedDB Sekarang (importDataFromJSON)</span>
                 </button>
               </div>
             )}
